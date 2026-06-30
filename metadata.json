@@ -1,0 +1,6 @@
+{
+  "name": "CipherChat",
+  "description": "A modern, production-quality secure messaging application with end-to-end encryption.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
