@@ -31,12 +31,6 @@ android {
       keyAlias = "upload"
       keyPassword = System.getenv("KEY_PASSWORD")
     }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
   }
 
   buildTypes {
@@ -46,9 +40,7 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
-    debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
-    }
+    // Debug builds use Android's default auto-generated debug keystore
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -99,9 +91,11 @@ dependencies {
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
+  implementation(libs.coil.gif)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   implementation(libs.firebase.firestore)
+  implementation(libs.firebase.auth)
   implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)

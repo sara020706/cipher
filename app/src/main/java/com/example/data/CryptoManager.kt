@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.util.Base64
+import org.json.JSONObject
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -120,5 +121,65 @@ object CryptoManager {
         val plainTextBytes = aesCipher.doFinal(encPayloadBytes)
 
         return String(plainTextBytes, Charsets.UTF_8)
+    }
+
+    // ==================== Envelope Encryption (v2) ====================
+    // Encrypts the content ONCE with a random AES-256 key, then RSA-wraps that
+    // key separately for every recipient. This gives true multi-recipient E2EE
+    // (groups, sender-readable history) with a single ciphertext copy — critical
+    // for large payloads like Base64 media.
+    //
+    // Envelope JSON: {"v":2,"iv":"...","ct":"...","keys":{"<uid>":"<wrappedKey>", ...}}
+
+    fun isEnvelope(payload: String): Boolean {
+        return payload.startsWith("{") && payload.contains("\"keys\"")
+    }
+
+    fun encryptEnvelope(plainContent: String, recipientKeys: Map<String, PublicKey>): String {
+        // 1. Generate random AES-256 key and encrypt content once
+        val keyGen = KeyGenerator.getInstance(AES_ALGORITHM)
+        keyGen.init(256)
+        val secretKey: SecretKey = keyGen.generateKey()
+
+        val aesCipher = Cipher.getInstance(AES_TRANSFORMATION)
+        aesCipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = aesCipher.iv
+        val cipherBytes = aesCipher.doFinal(plainContent.toByteArray(Charsets.UTF_8))
+
+        // 2. Wrap the AES key for every recipient
+        val keysObj = JSONObject()
+        for ((uid, publicKey) in recipientKeys) {
+            val rsaCipher = Cipher.getInstance(RSA_TRANSFORMATION)
+            rsaCipher.init(Cipher.ENCRYPT_MODE, publicKey)
+            val wrapped = rsaCipher.doFinal(secretKey.encoded)
+            keysObj.put(uid, Base64.encodeToString(wrapped, Base64.NO_WRAP))
+        }
+
+        return JSONObject()
+            .put("v", 2)
+            .put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
+            .put("ct", Base64.encodeToString(cipherBytes, Base64.NO_WRAP))
+            .put("keys", keysObj)
+            .toString()
+    }
+
+    // Returns the decrypted content, or throws if this uid has no wrapped key
+    fun decryptEnvelope(envelopeJson: String, myUid: String, privateKey: PrivateKey): String {
+        val envelope = JSONObject(envelopeJson)
+        val keysObj = envelope.getJSONObject("keys")
+        if (!keysObj.has(myUid)) {
+            throw IllegalArgumentException("No wrapped key for uid $myUid")
+        }
+
+        val rsaCipher = Cipher.getInstance(RSA_TRANSFORMATION)
+        rsaCipher.init(Cipher.DECRYPT_MODE, privateKey)
+        val aesKeyBytes = rsaCipher.doFinal(Base64.decode(keysObj.getString(myUid), Base64.NO_WRAP))
+        val secretKey = SecretKeySpec(aesKeyBytes, AES_ALGORITHM)
+
+        val iv = Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)
+        val cipherBytes = Base64.decode(envelope.getString("ct"), Base64.NO_WRAP)
+        val aesCipher = Cipher.getInstance(AES_TRANSFORMATION)
+        aesCipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_LENGTH, iv))
+        return String(aesCipher.doFinal(cipherBytes), Charsets.UTF_8)
     }
 }

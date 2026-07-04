@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CipherChat mark, tightly cropped for in-app use (splash, auth screen) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="56dp"
+    android:height="56dp"
+    android:viewportWidth="56"
+    android:viewportHeight="56">
+    <group
+        android:translateX="-26"
+        android:translateY="-26">
+        <!-- Blue: top-left quarter -->
+        <path
+            android:pathData="M33,54 A21,21 0 0 1 54,33"
+            android:strokeColor="#4285F4"
+            android:strokeWidth="8"
+            android:strokeLineCap="butt"
+            android:fillColor="#00000000" />
+        <!-- Red: top-right quarter -->
+        <path
+            android:pathData="M54,33 A21,21 0 0 1 75,54"
+            android:strokeColor="#EA4335"
+            android:strokeWidth="8"
+            android:strokeLineCap="butt"
+            android:fillColor="#00000000" />
+        <!-- Yellow: bottom-right quarter -->
+        <path
+            android:pathData="M75,54 A21,21 0 0 1 54,75"
+            android:strokeColor="#FBBC05"
+            android:strokeWidth="8"
+            android:strokeLineCap="butt"
+            android:fillColor="#00000000" />
+        <!-- Green: bottom-left quarter -->
+        <path
+            android:pathData="M54,75 A21,21 0 0 1 33,54"
+            android:strokeColor="#34A853"
+            android:strokeWidth="8"
+            android:strokeLineCap="butt"
+            android:fillColor="#00000000" />
+
+        <!-- Chat-bubble tail -->
+        <path
+            android:fillColor="#34A853"
+            android:pathData="M40.5,71.5 L31,81 L45.5,76.5 Z" />
+
+        <!-- Padlock shackle -->
+        <path
+            android:pathData="M49.5,52.5 L49.5,48.5 A4.5,4.5 0 0 1 58.5,48.5 L58.5,52.5"
+            android:strokeColor="#34A853"
+            android:strokeWidth="3.4"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000" />
+
+        <!-- Padlock body -->
+        <path
+            android:fillColor="#34A853"
+            android:pathData="M48,52.5 L60,52.5 A2.5,2.5 0 0 1 62.5,55 L62.5,63 A2.5,2.5 0 0 1 60,65.5 L48,65.5 A2.5,2.5 0 0 1 45.5,63 L45.5,55 A2.5,2.5 0 0 1 48,52.5 Z" />
+
+        <!-- Keyhole -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M52.1,57.2 a1.9,1.9 0 1 0 3.8,0 a1.9,1.9 0 1 0 -3.8,0 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M53.2,58.4 L54.8,58.4 L54.8,61.6 L53.2,61.6 Z" />
+    </group>
+</vector>

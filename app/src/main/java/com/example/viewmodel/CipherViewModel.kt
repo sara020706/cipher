@@ -1,14 +1,20 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppSettingsEntity
 import com.example.data.ChatEntity
 import com.example.data.CipherRepository
 import com.example.data.FriendRequestEntity
+import com.example.data.MediaUtils
 import com.example.data.MessageEntity
 import com.example.data.UserEntity
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,11 +31,17 @@ import kotlinx.coroutines.withContext
 
 data class DecryptedMessage(
     val entity: MessageEntity,
-    val decryptedText: String
+    val decryptedText: String,
+    val mediaBase64: String? = null
 )
 
 class CipherViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = CipherRepository(application)
+
+    // Theme is mirrored to SharedPreferences so the very first frame renders
+    // with the right theme (Room loads too late and causes a dark→light flash)
+    private val prefs = application.getSharedPreferences("cipher_prefs", Context.MODE_PRIVATE)
+    private val startupTheme: String = prefs.getString("theme", "DARK") ?: "DARK"
 
     // Current session status
     private val _isLoggedIn = MutableStateFlow(false)
@@ -37,6 +49,17 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isDbInitialized = MutableStateFlow(false)
     val isDbInitialized: StateFlow<Boolean> = _isDbInitialized.asStateFlow()
+
+    // True while restoring the previous session at startup — the UI shows a
+    // splash instead of flashing the auth screen
+    private val _isSessionLoading = MutableStateFlow(true)
+    val isSessionLoading: StateFlow<Boolean> = _isSessionLoading.asStateFlow()
+
+    private val _authError = MutableStateFlow<String?>(null)
+    val authError: StateFlow<String?> = _authError.asStateFlow()
+
+    private val _isAuthLoading = MutableStateFlow(false)
+    val isAuthLoading: StateFlow<Boolean> = _isAuthLoading.asStateFlow()
 
     // Screen selection / Chat state
     private val _activeChatId = MutableStateFlow<String?>(null)
@@ -51,7 +74,10 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
     private val _replyToMessage = MutableStateFlow<MessageEntity?>(null)
     val replyToMessage: StateFlow<MessageEntity?> = _replyToMessage.asStateFlow()
 
-    // Observe local User Profile (Alice)
+    private val _isSendingMedia = MutableStateFlow(false)
+    val isSendingMedia: StateFlow<Boolean> = _isSendingMedia.asStateFlow()
+
+    // Observe local User Profile
     val currentUser: StateFlow<UserEntity?> = repository.getMeFlow().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -60,11 +86,11 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
 
     // Observe App Settings
     val settings: StateFlow<AppSettingsEntity> = repository.getSettingsFlow().map {
-        it ?: AppSettingsEntity()
+        it ?: AppSettingsEntity(themeMode = startupTheme)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = AppSettingsEntity()
+        initialValue = AppSettingsEntity(themeMode = startupTheme)
     )
 
     // Chats & Friends Flow
@@ -90,7 +116,7 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         initialValue = emptyList()
     )
 
-    // Observe Friends
+    // Observe Friends (all known non-blocked users except me)
     @OptIn(ExperimentalCoroutinesApi::class)
     val friendsList: StateFlow<List<UserEntity>> = currentUser.flatMapLatest { me ->
         if (me == null) flowOf(emptyList())
@@ -126,6 +152,20 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         initialValue = null
     )
 
+    // The peer user of the active 1:1 chat (for presence display)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val activeChatPeer: StateFlow<UserEntity?> = combine(activeChat, currentUser) { chat, me ->
+        if (chat == null || me == null || chat.isGroup) null
+        else chat.members.split(",").firstOrNull { it.isNotBlank() && it != me.id }
+    }.flatMapLatest { peerId ->
+        if (peerId == null) flowOf(null)
+        else repository.getUserFlow(peerId)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = null
+    )
+
     // Active Messages with reactive decryption
     @OptIn(ExperimentalCoroutinesApi::class)
     val activeMessages: StateFlow<List<DecryptedMessage>> = _activeChatId.flatMapLatest { id ->
@@ -133,8 +173,8 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         else repository.getMessagesForChatFlow(id).map { list ->
             withContext(Dispatchers.Default) {
                 list.map { msg ->
-                    val text = repository.decryptMessage(msg)
-                    DecryptedMessage(msg, text)
+                    val content = repository.decryptMessage(msg)
+                    DecryptedMessage(msg, content.text, content.mediaBase64)
                 }
             }
         }
@@ -148,70 +188,116 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             repository.initializeDatabaseIfNeeded()
             _isDbInitialized.value = true
-            val me = repository.getMe()
-            if (me != null) {
-                _isLoggedIn.value = true
+
+            val firebaseUser = FirebaseAuth.getInstance().currentUser
+            if (firebaseUser != null) {
+                val success = repository.setupExistingUser(firebaseUser.uid)
+                if (success) {
+                    onLoggedIn(firebaseUser.uid)
+                }
             }
+            _isSessionLoading.value = false
         }
     }
 
-    // Authentication Simulations
-    fun signUp(username: String, displayName: String, bio: String, avatarUrl: String) {
-        viewModelScope.launch {
-            repository.initializeDatabaseIfNeeded()
-            val me = repository.getMe()
-            if (me != null) {
-                repository.updateMe(displayName, bio, avatarUrl)
-            } else {
-                // SignUp creates Me
-                val myKeyPair = com.example.data.CryptoManager.generateRsaKeyPair()
-                val user = UserEntity(
-                    id = "ME",
-                    username = username.ifEmpty { "cipher_user" },
-                    displayName = displayName.ifEmpty { "Cipher User" },
-                    avatarUrl = avatarUrl.ifEmpty { "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150" },
-                    bio = bio.ifEmpty { "🔐 Securing my chats with End-to-End Cryptography." },
-                    publicKey = com.example.data.CryptoManager.publicKeyToString(myKeyPair.public),
-                    privateKey = com.example.data.SecureKeyStore.encrypt(com.example.data.CryptoManager.privateKeyToString(myKeyPair.private)),
-                    isMe = true,
-                    onlineStatus = "ONLINE"
-                )
-                // Insert User is handled by repository
-                // In our implementation, initializeDatabaseIfNeeded seeds default Alice first.
-                // If Alice is already seeded, updateMe updates the display details perfectly.
-                repository.updateMe(user.displayName, user.bio, user.avatarUrl)
-            }
-            _isLoggedIn.value = true
-        }
+    private fun onLoggedIn(uid: String) {
+        _isLoggedIn.value = true
+        repository.startGlobalSync(uid)
+        viewModelScope.launch { repository.setPresence(true) }
     }
 
-    fun login(email: String) {
-        viewModelScope.launch {
-            repository.initializeDatabaseIfNeeded()
-            // Simulating successful login using existing seeded/updated Me
-            _isLoggedIn.value = true
+    // Real Firebase Authentication
+    fun signUp(email: String, password: String, username: String, displayName: String, bio: String, avatarUrl: String) {
+        if (email.isEmpty() || password.isEmpty() || username.isEmpty()) {
+            _authError.value = "Email, password, and username are required."
+            return
         }
+        _isAuthLoading.value = true
+        _authError.value = null
+        FirebaseAuth.getInstance().createUserWithEmailAndPassword(email, password)
+            .addOnSuccessListener { authResult ->
+                val uid = authResult.user?.uid ?: return@addOnSuccessListener
+                viewModelScope.launch {
+                    repository.setupNewUser(uid, username, displayName.ifEmpty { username }, bio, avatarUrl)
+                    _isAuthLoading.value = false
+                    onLoggedIn(uid)
+                }
+            }
+            .addOnFailureListener { e ->
+                _isAuthLoading.value = false
+                _authError.value = e.localizedMessage ?: "Sign up failed."
+                Log.e("CipherViewModel", "Sign up failed: ${e.localizedMessage}")
+            }
+    }
+
+    fun login(email: String, password: String) {
+        if (email.isEmpty() || password.isEmpty()) {
+            _authError.value = "Email and password are required."
+            return
+        }
+        _isAuthLoading.value = true
+        _authError.value = null
+        FirebaseAuth.getInstance().signInWithEmailAndPassword(email, password)
+            .addOnSuccessListener { authResult ->
+                val uid = authResult.user?.uid ?: return@addOnSuccessListener
+                viewModelScope.launch {
+                    val success = repository.setupExistingUser(uid)
+                    _isAuthLoading.value = false
+                    if (success) {
+                        onLoggedIn(uid)
+                    } else {
+                        _authError.value = "Could not restore your account profile."
+                        Log.e("CipherViewModel", "Existing user setup failed")
+                    }
+                }
+            }
+            .addOnFailureListener { e ->
+                _isAuthLoading.value = false
+                _authError.value = e.localizedMessage ?: "Login failed."
+                Log.e("CipherViewModel", "Login failed: ${e.localizedMessage}")
+            }
+    }
+
+    fun clearAuthError() {
+        _authError.value = null
     }
 
     fun logout() {
-        _isLoggedIn.value = false
+        viewModelScope.launch {
+            repository.setPresence(false)
+            repository.stopGlobalSync()
+            FirebaseAuth.getInstance().signOut()
+            repository.clearLocalDatabase()
+            _activeChatId.value = null
+            _isLoggedIn.value = false
+        }
+    }
+
+    // Presence hooks driven by Activity lifecycle
+    fun onAppForeground() {
+        if (_isLoggedIn.value) {
+            viewModelScope.launch { repository.setPresence(true) }
+        }
+    }
+
+    fun onAppBackground() {
+        if (_isLoggedIn.value) {
+            viewModelScope.launch { repository.setPresence(false) }
+        }
     }
 
     // Selection
     fun selectChat(chatId: String?) {
         _activeChatId.value = chatId
         _replyToMessage.value = null
-        if (chatId != null) {
-            viewModelScope.launch {
-                val chat = repository.getChatById(chatId)
-                if (chat != null && chat.unreadCount > 0) {
-                    // Reset unread count
-                    // We'd have database.chatDao().setChatUnreadCount(chatId, 0)
-                    // Let's create a transaction or call via repository
-                    // repository doesn't have it directly but we can add it or make it simple
-                }
-            }
+        viewModelScope.launch {
+            repository.setActiveChat(chatId)
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        repository.stopGlobalSync()
     }
 
     fun setSearchQuery(query: String) {
@@ -227,21 +313,64 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // Chat Actions
-    fun sendChatMessage(text: String, mediaUri: String? = null, mediaType: String? = null) {
+    fun sendChatMessage(text: String) {
         val chatId = _activeChatId.value ?: return
-        if (text.trim().isEmpty() && mediaUri == null) return
+        if (text.trim().isEmpty()) return
 
         viewModelScope.launch {
             repository.sendSecureMessage(
                 chatId = chatId,
-                text = text,
-                mediaUri = mediaUri,
-                mediaType = mediaType,
+                text = text.trim(),
                 replyToId = _replyToMessage.value?.id
             )
             _messageInput.value = ""
             _replyToMessage.value = null
         }
+    }
+
+    // Compress the picked image and send it inside the encrypted envelope
+    fun sendImageMessage(uri: Uri, caption: String = "") {
+        val chatId = _activeChatId.value ?: return
+        viewModelScope.launch {
+            _isSendingMedia.value = true
+            try {
+                // GIFs are sent as-is (recompressing to JPEG would freeze the animation)
+                val isGif = MediaUtils.getMimeType(getApplication(), uri) == "image/gif"
+                val base64 = if (isGif) {
+                    MediaUtils.uriToRawBase64(getApplication(), uri)
+                } else {
+                    MediaUtils.uriToCompressedBase64(getApplication(), uri)
+                }
+                if (base64 != null) {
+                    val result = repository.sendSecureMessage(
+                        chatId = chatId,
+                        text = caption.trim(),
+                        mediaBase64 = base64,
+                        mediaType = if (isGif) "GIF" else "IMAGE",
+                        replyToId = _replyToMessage.value?.id
+                    )
+                    if (result.startsWith("ERROR")) {
+                        showToast("Could not send the photo ($result)")
+                    } else {
+                        _messageInput.value = ""
+                        _replyToMessage.value = null
+                    }
+                } else if (isGif) {
+                    showToast("GIF too large — only GIFs under ~300KB can be sent")
+                } else {
+                    showToast("Could not read or compress that image")
+                }
+            } catch (e: Exception) {
+                Log.e("CipherViewModel", "Image send failed", e)
+                showToast("Photo failed: ${e.localizedMessage}")
+            } finally {
+                _isSendingMedia.value = false
+            }
+        }
+    }
+
+    private fun showToast(message: String) {
+        Toast.makeText(getApplication(), message, Toast.LENGTH_LONG).show()
     }
 
     fun addReactionToMessage(messageId: String, emoji: String) {
@@ -274,11 +403,24 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Chat list item actions
+    fun setChatPinned(chatId: String, pinned: Boolean) {
+        viewModelScope.launch { repository.setChatPinned(chatId, pinned) }
+    }
+
+    fun setChatArchived(chatId: String, archived: Boolean) {
+        viewModelScope.launch { repository.setChatArchived(chatId, archived) }
+    }
+
+    fun setChatMuted(chatId: String, muted: Boolean) {
+        viewModelScope.launch { repository.setChatMuted(chatId, muted) }
+    }
+
     // Friend Operations
-    fun sendFriendRequest(username: String, onSuccess: (Boolean) -> Unit) {
+    fun sendFriendRequest(username: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
             val success = repository.sendFriendRequest(username)
-            onSuccess(success)
+            onResult(success)
         }
     }
 
@@ -314,8 +456,16 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Profile
+    fun updateProfile(displayName: String, bio: String, avatarUrl: String) {
+        viewModelScope.launch {
+            repository.updateMe(displayName, bio, avatarUrl)
+        }
+    }
+
     // Settings Operations
     fun updateThemeMode(mode: String) {
+        prefs.edit().putString("theme", mode).apply()
         viewModelScope.launch {
             val current = settings.value
             repository.updateSettings(current.copy(themeMode = mode))
@@ -333,27 +483,6 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val current = settings.value
             repository.updateSettings(current.copy(fontSize = size))
-        }
-    }
-
-    fun updateLanguage(lang: String) {
-        viewModelScope.launch {
-            val current = settings.value
-            repository.updateSettings(current.copy(language = lang))
-        }
-    }
-
-    fun updateChatWallpaper(wallpaper: String?) {
-        viewModelScope.launch {
-            val current = settings.value
-            repository.updateSettings(current.copy(chatWallpaper = wallpaper))
-        }
-    }
-
-    fun updateBlockUnknownSenders(block: Boolean) {
-        viewModelScope.launch {
-            val current = settings.value
-            repository.updateSettings(current.copy(blockUnknownSenders = block))
         }
     }
 }

@@ -85,6 +85,9 @@ interface ChatDao {
     @Query("UPDATE chats SET unreadCount = :unreadCount WHERE id = :chatId")
     suspend fun setChatUnreadCount(chatId: String, unreadCount: Int)
 
+    @Query("UPDATE chats SET unreadCount = unreadCount + 1 WHERE id = :chatId")
+    suspend fun incrementUnreadCount(chatId: String)
+
     @Query("UPDATE chats SET lastMessageText = :text, lastMessageTime = :time WHERE id = :chatId")
     suspend fun updateLastMessage(chatId: String, text: String, time: Long)
 
@@ -99,6 +102,12 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE id = :messageId LIMIT 1")
     suspend fun getMessageById(messageId: String): MessageEntity?
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY timestamp ASC")
+    suspend fun getMessagesForChatOnce(chatId: String): List<MessageEntity>
+
+    @Query("UPDATE messages SET status = :status WHERE id = :messageId")
+    suspend fun updateMessageStatus(messageId: String, status: String)
 
     @Query("SELECT * FROM messages WHERE isStarred = 1 AND isDeletedForMe = 0 ORDER BY timestamp DESC")
     fun getStarredMessagesFlow(): Flow<List<MessageEntity>>

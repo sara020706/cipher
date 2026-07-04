@@ -33,7 +33,8 @@ data class ChatEntity(
     val lastMessageText: String? = null,
     val lastMessageTime: Long = System.currentTimeMillis(),
     val unreadCount: Int = 0,
-    val inviteLink: String? = null
+    val inviteLink: String? = null,
+    val members: String = "" // Comma-joined member UIDs, mirrored to Firestore /chats/{id}.members
 )
 
 @Entity(tableName = "messages")
@@ -41,7 +42,8 @@ data class MessageEntity(
     @PrimaryKey val id: String,
     val chatId: String,
     val senderId: String,
-    val encryptedPayload: String, // Hybrid encrypted string
+    val encryptedPayload: String, // Hybrid encrypted string (recipient's key)
+    val selfEncryptedPayload: String = "", // Same plaintext encrypted with the sender's own key
     val timestamp: Long = System.currentTimeMillis(),
     val status: String = "SENT", // "SENT", "DELIVERED", "READ"
     val isEdited: Boolean = false,
