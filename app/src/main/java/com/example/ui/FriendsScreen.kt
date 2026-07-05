@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -177,6 +178,7 @@ fun FriendsScreen(viewModel: CipherViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clickable { viewModel.openChatWithFriend(friend.id) }
                         .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Avatar(name = friend.displayName, avatarUrl = friend.avatarUrl, size = 44.dp)

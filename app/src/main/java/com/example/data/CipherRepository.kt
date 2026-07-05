@@ -111,7 +111,18 @@ class CipherRepository(context: Context) {
             }
 
             val firestoreUser = FirestoreSyncManager.fetchUserProfile(appContext, firebaseUid) ?: return@withContext false
-            userDao.insertUser(firestoreUser)
+
+            // This device has no private key for the account (fresh install or
+            // post-logout). Messages from before are permanently unreadable, so
+            // generate a new keypair and publish the new public key — the account
+            // works normally from this point on.
+            val keyPair = CryptoManager.generateRsaKeyPair()
+            val userWithKeys = firestoreUser.copy(
+                publicKey = CryptoManager.publicKeyToString(keyPair.public),
+                privateKey = SecureKeyStore.encrypt(CryptoManager.privateKeyToString(keyPair.private))
+            )
+            userDao.insertUser(userWithKeys)
+            FirestoreSyncManager.syncUserProfile(appContext, userWithKeys)
 
             if (appSettingsDao.getSettings() == null) {
                 appSettingsDao.saveSettings(AppSettingsEntity())
@@ -646,6 +657,36 @@ class CipherRepository(context: Context) {
             FirestoreSyncManager.syncChatMetadata(appContext, chat)
             FirestoreSyncManager.updateFriendRequestStatusInFirestore(appContext, requestId, "ACCEPTED")
             friendRequestDao.deleteRequest(requestId)
+        }
+    }
+
+    // Open (or create) the 1:1 chat with a friend — same deterministic id as the
+    // accept flow, so both devices always resolve to one shared chat
+    suspend fun openDirectChat(friendId: String): String? {
+        return withContext(Dispatchers.IO) {
+            val me = userDao.getMe() ?: return@withContext null
+            val friend = userDao.getUserById(friendId)
+                ?: FirestoreSyncManager.fetchUserProfile(appContext, friendId, isMe = false)
+                    ?.also { userDao.insertUser(it) }
+                ?: return@withContext null
+
+            val chatId = listOf(me.id, friendId).sorted().joinToString("_")
+            if (chatDao.getChatById(chatId) == null) {
+                val chat = ChatEntity(
+                    id = chatId,
+                    name = friend.displayName,
+                    avatarUrl = friend.avatarUrl,
+                    isGroup = false,
+                    lastMessageText = "Secure connection initialized. Tap to chat.",
+                    lastMessageTime = System.currentTimeMillis(),
+                    members = "${me.id},$friendId"
+                )
+                chatDao.insertChat(chat)
+                groupMemberDao.insertMember(GroupMemberEntity("${chatId}_${me.id}", chatId, me.id, "MEMBER"))
+                groupMemberDao.insertMember(GroupMemberEntity("${chatId}_$friendId", chatId, friendId, "MEMBER"))
+                FirestoreSyncManager.syncChatMetadata(appContext, chat)
+            }
+            chatId
         }
     }
 

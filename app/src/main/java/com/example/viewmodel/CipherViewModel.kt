@@ -424,6 +424,18 @@ class CipherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Tap a friend → open (or create) the 1:1 chat
+    fun openChatWithFriend(friendId: String) {
+        viewModelScope.launch {
+            val chatId = repository.openDirectChat(friendId)
+            if (chatId != null) {
+                selectChat(chatId)
+            } else {
+                showToast("Could not open the chat")
+            }
+        }
+    }
+
     fun acceptFriendRequest(requestId: String) {
         viewModelScope.launch {
             repository.acceptFriendRequest(requestId)
